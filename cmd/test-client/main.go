@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -32,6 +31,7 @@ func main() {
 		log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
 	}()
 
+	verbose := flag.Bool("v", false, "print bandwdith")
 	streams := flag.Int("streams", 1, "number of parallel download streams")
 	flag.Parse()
 
@@ -83,14 +83,34 @@ func main() {
 
 		log.Printf("Transfering data...")
 
+		var total uint32 // used as an atomic
+		if *verbose {
+			go func() {
+				var lastTotal uint32
+				lastTime := time.Now()
+				for t := range time.NewTicker(3 * time.Second).C {
+					tot := atomic.LoadUint32(&total)
+					log.Printf("Current bandwidth: %f MB/s\n", float64(tot-lastTotal)/(1e6*t.Sub(lastTime).Seconds()))
+					lastTime = t
+					lastTotal = tot
+				}
+			}()
+		}
 		start := time.Now()
-		n, err := io.Copy(ioutil.Discard, s)
-		if err != nil {
-			log.Printf("Error receiving data: %s", err)
+		b := make([]byte, 1<<10)
+		for {
+			n, err := s.Read(b)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Printf("Error receiving data: %s", err)
+			}
+			atomic.AddUint32(&total, uint32(n))
 		}
 		end := time.Now()
 
-		log.Printf("Received %d bytes in %s", n, end.Sub(start))
+		log.Printf("Received %d bytes in %s", atomic.LoadUint32(&total), end.Sub(start))
 	} else {
 		var wg sync.WaitGroup
 		var count int64
