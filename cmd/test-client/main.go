@@ -5,21 +5,18 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
 
 	quic "github.com/libp2p/go-libp2p-quic-transport"
-	tcp "github.com/libp2p/go-tcp-transport"
 	ma "github.com/multiformats/go-multiaddr"
 
 	_ "net/http/pprof"
@@ -32,7 +29,7 @@ func main() {
 		log.Println(http.ListenAndServe("0.0.0.0:6060", nil))
 	}()
 
-	streams := flag.Int("streams", 1, "number of parallel download streams")
+	num := flag.Int("num", 10000, "number of connections")
 	flag.Parse()
 
 	if len(flag.Args()) != 1 {
@@ -53,87 +50,48 @@ func main() {
 
 	ctx := context.Background()
 
-	host, err := libp2p.New(ctx,
-		libp2p.NoListenAddrs,
-		libp2p.Transport(tcp.NewTCPTransport),
-		libp2p.Transport(quic.NewTransport),
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer host.Close()
-
-	log.Printf("Connecting to %s", pi.ID.Pretty())
-
-	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	err = host.Connect(cctx, *pi)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("Connected; requesting data...")
-
-	if *streams == 1 {
-		s, err := host.NewStream(cctx, pi.ID, TestProtocol)
-		if err != nil {
-			log.Fatal(err)
-			return
-		}
-		defer s.Close()
-
-		log.Printf("Transfering data...")
-
-		start := time.Now()
-		n, err := io.Copy(ioutil.Discard, s)
-		if err != nil {
-			log.Printf("Error receiving data: %s", err)
-			return
-		}
-		end := time.Now()
-
-		log.Printf("Received %d bytes in %s", n, end.Sub(start))
-	} else {
-		var wg sync.WaitGroup
-		var count int64
-
-		dataStreams := make([]network.Stream, 0, *streams)
-		for i := 0; i < *streams; i++ {
-			s, err := host.NewStream(cctx, pi.ID, TestProtocol)
+	var wg sync.WaitGroup
+	wg.Add(*num)
+	sem := make(chan struct{}, 32)
+	for i := 0; i < *num; i++ {
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			start := time.Now()
+			defer func() { <-sem }()
+			host, err := libp2p.New(ctx,
+				libp2p.NoListenAddrs,
+				libp2p.Transport(quic.NewTransport),
+			)
 			if err != nil {
 				log.Fatal(err)
-				return
 			}
-			defer s.Close()
-			dataStreams = append(dataStreams, s)
-		}
 
-		log.Printf("Transferring data in %d parallel streams", *streams)
+			cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
 
-		start := time.Now()
-		for i := 0; i < *streams; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				file, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
+			if err := host.Connect(cctx, *pi); err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("Connected %s in %s.\n", host.ID(), time.Since(start))
+
+			go func() {
+				str, err := host.NewStream(ctx, (*pi).ID, TestProtocol)
 				if err != nil {
 					log.Fatal(err)
 				}
-				defer file.Close()
-
-				n, err := io.Copy(file, dataStreams[i])
-				if err != nil {
-					log.Printf("Error receiving data: %s", err)
-					return
+				var counter int
+				for range time.NewTicker(time.Duration(rand.Intn(i+1)+1) * time.Second).C {
+					if _, err := io.WriteString(str, fmt.Sprintf("message %d", counter)); err != nil {
+						return
+					}
+					counter++
 				}
-				atomic.AddInt64(&count, n)
-			}(i)
-		}
-
-		wg.Wait()
-		end := time.Now()
-		log.Printf("Received %d bytes in %s", count, end.Sub(start))
-
+			}()
+		}(i)
 	}
+
+	wg.Wait()
+	log.Printf("Established %d connections.\n", *num)
+	select {}
 }

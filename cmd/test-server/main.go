@@ -5,11 +5,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p-core/crypto"
@@ -17,7 +15,7 @@ import (
 	"github.com/libp2p/go-libp2p-core/protocol"
 
 	quic "github.com/libp2p/go-libp2p-quic-transport"
-	tcp "github.com/libp2p/go-tcp-transport"
+	"github.com/libp2p/go-tcp-transport"
 
 	_ "net/http/pprof"
 )
@@ -70,21 +68,15 @@ func main() {
 }
 
 func handleStream(s network.Stream) {
-	defer s.Close()
-
-	log.Printf("Incoming connection from %s", s.Conn().RemoteMultiaddr())
-
-	file, err := os.Open(testFilePath)
-	if err != nil {
-		log.Fatal(err)
+	b := make([]byte, 100)
+	for {
+		n, err := s.Read(b)
+		if err != nil {
+			return
+		}
+		if _, err := s.Write(b[:n]); err != nil {
+			return
+		}
 	}
-	defer file.Close()
-
-	start := time.Now().UnixNano()
-	n, err := io.Copy(s, file)
-	if err != nil {
-		log.Printf("Error transmiting file: %s", err)
-	}
-	end := time.Now().UnixNano()
-	log.Printf("Transmitted %d bytes in %s", n, time.Duration(end-start))
+	fmt.Println("done with connection to", s.Conn().RemotePeer())
 }
