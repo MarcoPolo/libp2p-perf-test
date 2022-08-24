@@ -41,7 +41,7 @@ func main() {
 	port := flag.Int("port", 4001, "server listen port (raw TCP prot will be +1)")
 	flag.Parse()
 
-	privKey, _, err := crypto.GenerateECDSAKeyPair(bytes.NewReader(bytes.Repeat([]byte{1}, 100)))
+	privKey, _, err := crypto.GenerateEd25519Key(bytes.NewReader(bytes.Repeat([]byte{1}, 100)))
 	if err != nil {
 		log.Fatal(err)
 	}
